@@ -108,7 +108,7 @@ The `packages/ai` layer uses a hybrid pattern that combines Strategy, Service Lo
 
 This means `Model` is both a value object (describing an LLM model's capabilities) and a routing key (used to find the handler). This is a pragmatic trade-off: it enables model-name-based lookup, multi-provider coexistence, and model comparison/deduplication, at the cost of giving `Model` a dual identity.
 
-Deeper analysis: [Provider 建模设计深度分析](packages/ai-provider-model.md), [Provider 与 Model 抽象分析](packages/ai-provider-model-analysis.md).
+Deeper analysis: [Provider 与 Model 建模设计](packages/ai/provider-model.md).
 
 ### Two code paths (migration in progress)
 
@@ -136,7 +136,7 @@ Each layer has a distinct responsibility (auth, provider lookup, API routing, op
 
 ### Stream event protocol
 
-All provider implementations normalize to a single `AssistantMessageEvent` protocol (`packages/ai/src/types.ts:453-465`). Each content block type (text, thinking, toolCall) follows a `_start → _delta* → _end` lifecycle. The `EventStream` class (`packages/ai/src/utils/event-stream.ts`) provides the async-iterable infrastructure. See [流事件协议分析](packages/ai-stream-events.md).
+All provider implementations normalize to a single `AssistantMessageEvent` protocol (`packages/ai/src/types.ts:453-465`). Each content block type (text, thinking, toolCall) follows a `_start → _delta* → _end` lifecycle. The `EventStream` class (`packages/ai/src/utils/event-stream.ts`) provides the async-iterable infrastructure. See [流事件协议分析](packages/ai/stream-events.md).
 
 ## Supply-chain hardening
 

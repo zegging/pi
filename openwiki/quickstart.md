@@ -15,7 +15,7 @@ Pi Mono is the monorepo for the **Pi agent harness** — a minimal, extensible c
 ## Quick links
 
 - [Architecture overview](architecture.md) — monorepo structure, build system, dependency graph
-- [packages/ai](packages/ai.md) — LLM API abstraction, providers, auth, model discovery
+- [packages/ai](packages/ai/index.md) — LLM API abstraction, providers, auth, model discovery
 - [packages/agent](packages/agent.md) — Agent loop, sessions, compaction, harness
 - [packages/coding-agent](packages/coding-agent.md) — CLI, tools, extensions, configuration
 - [packages/tui](packages/tui.md) — Terminal UI framework, components, rendering
