@@ -52,6 +52,7 @@ The `AuthStorage` class (in `packages/coding-agent`) persists credentials, while
 
 ## Deep dives
 
+- [Provider 建模设计深度分析](ai-provider-model.md) — `createProvider` 入参/出参、`Provider<TApi>` 泛型设计、单一 API vs 多 API 路由表、Ambient/OAuth/自定义 Env 认证实现差异、`Models` 运行时编排、调用链全景
 - [流事件协议分析](ai-stream-events.md) — `AssistantMessageEvent` 类型定义、事件生命周期、Provider 映射机制、HTTP 传输层关系
 
 ## Package structure
