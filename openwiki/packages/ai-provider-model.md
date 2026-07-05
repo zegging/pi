@@ -17,6 +17,7 @@
   - [5.4 自定义 ProviderEnv 认证提供者](#54-自定义-providerenv-认证提供者)
   - [5.5 OAuth 提供者](#55-oauth-提供者)
   - [5.6 对比总结](#56-对比总结)
+  - [5.7 外部扩展：自定义 Provider 接入](#57-外部扩展自定义-provider-接入)
 - [6. `Models` 集合 —— 运行时编排层](#6-models-集合--运行时编排层)
 - [7. 调用链全景](#7-调用链全景)
 - [8. 设计约束与权衡](#8-设计约束与权衡)
@@ -455,6 +456,85 @@ auth: {
 | options 类型 | `ApiStreamOptions<TApi>`（协议特有） | `SimpleStreamOptions`（跨协议统一） |
 | 实现方式 | 直接调 SDK | 翻译参数后调 `stream` |
 | 典型参数 | `effort`, `thinkingBudgetTokens`, `reasoningEffort`... | `reasoning: "high"`
+
+---
+
+### 5.7 外部扩展：自定义 Provider 接入
+
+pi 提供了两种方式让外部代码注册自定义 provider，不需要修改 `packages/ai` 源码。
+
+#### 方式一：声明式 `models.json`（零代码）
+
+`pi` 启动时从 `~/.pi/agent/models.json` 和 `<project>/.pi/models.json` 加载自定义 provider。格式为 key-value，每个 key 是 provider id：
+
+```json
+{
+  "my-proxy": {
+    "baseUrl": "https://api.example.com/v1",
+    "apiKey": "$MY_API_KEY",
+    "api": "openai-completions",
+    "models": [
+      {
+        "id": "gpt-4o",
+        "name": "GPT-4o (proxy)",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": { "input": 2.5, "output": 10, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 128000,
+        "maxTokens": 16384
+      }
+    ]
+  }
+}
+```
+
+- `apiKey` 支持 `$ENV_VAR` 语法引用环境变量
+- `api` 必须是内置已知 API 之一（如 `"openai-completions"`），由 `packages/ai` 提供流式实现
+- 不需要写任何代码，适合纯代理/转发场景
+
+#### 方式二：Extension 调用 `pi.registerProvider()`（完整控制）
+
+Extension 是 pi 的插件系统，通过 `ExtensionAPI.registerProvider(name, config)` 注册 provider。对应的 `ProviderConfig` 接口定义在 `packages/coding-agent/src/core/extensions/types.ts:1386`：
+
+```ts
+interface ProviderConfig {
+    name?: string;
+    baseUrl?: string;
+    apiKey?: string;              // 字符串字面量或 $ENV_VAR 引用
+    api?: Api;                    // 已知 API 或自定义字符串
+    headers?: Record<string, string>;
+    authHeader?: boolean;         // 自动添加 Authorization: Bearer
+    models?: ProviderModelConfig[];
+    streamSimple?: (model, context, options) => AssistantMessageEventStream;
+    oauth?: {
+        name: string;
+        login(callbacks): Promise<OAuthCredentials>;
+        refreshToken(credentials): Promise<OAuthCredentials>;
+        getApiKey(credentials): string;
+        modifyModels?(models, credentials): Model<Api>[];
+    };
+}
+```
+
+`registerProvider` 在 `packages/coding-agent/src/core/model-registry.ts:828` 中实现，行为分三种情况：
+
+- **有 `models`**：替换该 provider 的所有已有模型，全新注册
+- **仅有 `baseUrl`/`headers`**：覆盖现有模型的 URL，不改模型列表
+- **有 `oauth`**：注册 OAuth provider，支持 `/login` 交互
+
+具体示例见 [扩展系统：自定义 Provider](extensions-custom-provider.md)。
+
+> 延伸阅读：[扩展系统：自定义 Provider](extensions-custom-provider.md) 包含两个完整可运行示例：从零实现 Anthropic 流式协议，以及复用内置 API 实现的 GitLab Duo 代理。
+
+#### 两种方式对比
+
+| | `models.json` | Extension `registerProvider` |
+|---|---|---|
+| 需要写代码 | 否 | 是 |
+| 自定义流式协议 | 否（只能用内置 API） | 是（`streamSimple`） |
+| OAuth 支持 | 否 | 是 |
+| 多后端模型路由 | 否 | 是 |
+| 安装/分发 | 文件复制 | Extension 包管理 |
 
 ---
 
