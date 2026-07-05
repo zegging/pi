@@ -50,6 +50,10 @@ The `AuthStorage` class (in `packages/coding-agent`) persists credentials, while
 - **Dynamic providers** — implement `refreshModels()` for runtime discovery from provider APIs
 - **`models.generated.ts`** — auto-generated via `packages/ai/scripts/generate-models.ts`; never edit directly
 
+## Deep dives
+
+- [流事件协议分析](ai-stream-events.md) — `AssistantMessageEvent` 类型定义、事件生命周期、Provider 映射机制、HTTP 传输层关系
+
 ## Package structure
 
 ```
