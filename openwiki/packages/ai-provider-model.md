@@ -8,7 +8,15 @@
 - [2. `CreateProviderOptions` — 入参设计](#2-createprovideroptions--入参设计)
 - [3. `createProvider` 工厂函数](#3-createprovider-工厂函数)
 - [4. `Provider<TApi>` — 出参接口](#4-providertapi--出参接口)
+  - [4.1 `stream` 的泛型设计](#41-stream-的泛型设计)
+  - [4.2 `stream` vs `streamSimple` —— 协议感知 vs 协议无关](#42-stream-vs-streamsimple--协议感知-vs-协议无关)
 - [5. 多态维度：同一接口的不同实现](#5-多态维度同一接口的不同实现)
+  - [5.1 单一 API 提供者](#51-单一-api-提供者)
+  - [5.2 多 API 提供者（路由表模式）](#52-多-api-提供者路由表模式)
+  - [5.3 Ambient 认证提供者](#53-ambient-认证提供者)
+  - [5.4 自定义 ProviderEnv 认证提供者](#54-自定义-providerenv-认证提供者)
+  - [5.5 OAuth 提供者](#55-oauth-提供者)
+  - [5.6 对比总结](#56-对比总结)
 - [6. `Models` 集合 —— 运行时编排层](#6-models-集合--运行时编排层)
 - [7. 调用链全景](#7-调用链全景)
 - [8. 设计约束与权衡](#8-设计约束与权衡)
@@ -206,14 +214,70 @@ export interface Provider<TApi extends Api = Api> {
 
 这要求 `Provider<"anthropic-messages">` 的 `stream` 方法接受 `Model<"anthropic-messages">` 并给出 `AnthropicOptions` 类型的选项。`createProvider` 内部通过 `dispatch` + `run` 闭包类型推导实现此约束。
 
-### 4.2 `stream` vs `streamSimple`
+### 4.2 `stream` vs `streamSimple` —— 协议感知 vs 协议无关
 
-| 方法 | 用途 | options 类型 |
-|------|------|-------------|
-| `stream` | 完整 API 能力，provider 特定选项 | `ApiStreamOptions<TApi>`（如 `AnthropicOptions` 含 `thinking`, `effort` 等） |
-| `streamSimple` | 跨 API 统一抽象，调用方不需要知道具体 API | `SimpleStreamOptions`（仅 `reasoning?: ThinkingLevel`, `thinkingBudgets?`） |
+核心区别：**调用方是否知道自己在跟哪个 API 协议对话。**
 
-`streamSimple` 内部负责将 `ThinkingLevel` 映射到具体 API 的 thinking 参数——这是"统一门面"模式，调用方不关心底层 API 如何实现 thinking。
+| | `stream` | `streamSimple` |
+|---|---|---|
+| **调用方知识** | 知道自己用的是哪个协议 | 只知道"我要推理" |
+| **options 类型** | `ApiStreamOptions<TApi>` — 协议特有参数 | `SimpleStreamOptions` — 跨协议统一 |
+| **泛型** | `stream<T extends TApi>`，与 model 联动 | `streamSimple(model: Model<TApi>)`，不引入额外泛型 |
+| **典型 options** | `effort`, `thinkingBudgetTokens`, `reasoningEffort`, `serviceTier`... | `reasoning?: ThinkingLevel`, `thinkingBudgets?` |
+
+`ApiStreamOptions<TApi>` 通过 `ApiOptionsMap` 条件类型映射到各协议的具体选项：
+
+```
+"anthropic-messages"    → AnthropicOptions      (thinkingEnabled, thinkingBudgetTokens, effort...)
+"openai-responses"      → OpenAIResponsesOptions (reasoningEffort, reasoningSummary, serviceTier...)
+"google-generative-ai"  → GoogleOptions          (google 特有的 thinking 参数)
+"bedrock-converse-stream" → BedrockOptions       (AWS 特有的 thinking 参数)
+...
+```
+
+这些类型彼此不兼容——`effort` 是 Anthropic 概念，`reasoningEffort` 是 OpenAI 概念。只有 `stream` 的调用方（知道自己用哪个协议）才能正确填充。
+
+#### `streamSimple` 的实现：始终委托给 `stream`
+
+`streamSimple` 从不直接调用 SDK。它是对 `stream` 的适配层，唯一职责是将统一的 `ThinkingLevel` 翻译为对应协议的参数，然后调用 `stream`。
+
+以 Anthropic 为例（`packages/ai/src/api/anthropic-messages.ts:767-807`）：
+
+```ts
+export const streamSimple = (model, context, options) => {
+    // 没要 reasoning → 关掉 thinking
+    if (!options?.reasoning) {
+        return stream(model, context, { thinkingEnabled: false });
+    }
+
+    // 自适应 thinking 模型（Opus 4.6+）→ ThinkingLevel 映射为 effort
+    if (model.compat?.forceAdaptiveThinking) {
+        const effort = mapThinkingLevelToEffort(model, options.reasoning);
+        return stream(model, context, { thinkingEnabled: true, effort });
+    }
+
+    // 旧模型（token budget 模式）→ 计算 thinkingBudgetTokens
+    const adjusted = adjustMaxTokensForThinking(
+        base.maxTokens, model.maxTokens, options.reasoning, options.thinkingBudgets
+    );
+    return stream(model, context, {
+        thinkingEnabled: true,
+        thinkingBudgetTokens: adjusted.thinkingBudget,
+        maxTokens: adjusted.maxTokens,
+    });
+};
+```
+
+**所有 9 个已知 API 的 `streamSimple` 实现都遵循同一模式：先翻译参数，再调用 `stream`。** 翻译逻辑因协议而异，但对外暴露的 `SimpleStreamOptions` 完全一致。
+
+#### 为什么需要两层
+
+调用链中有两类消费者：
+
+1. **知道协议细节的代码**（如 agent 的 model selector 想给 Claude 传 `effort: "xhigh"`）→ 用 `stream`，完全控制
+2. **不知道协议细节的代码**（如 coding-agent 的 `--thinking` flag，用户只选了 `high`）→ 用 `streamSimple`，pi 负责把 `"high"` 翻译成 Anthropic 的 `effort: "high"` 或 OpenAI 的 `reasoningEffort: "high"`
+
+如果没有 `streamSimple`，每个调用方都得自己写一份 `ThinkingLevel → 协议参数` 的映射逻辑，而且很容易写错（比如把 `effort` 传给 OpenAI）。
 
 ---
 
@@ -282,28 +346,45 @@ export function githubCopilotProvider():
 
 **代表：Amazon Bedrock**
 
+**Ambient 认证**是指：不需要用户向 pi 显式提供 API key，而是依赖运行环境中已经存在的凭据。pi 代码不持有、不传递 key，只负责检测"是否已配置"。
+
+**以 Bedrock 为例**（`packages/ai/src/providers/amazon-bedrock.ts:6-25`）：
+
 ```ts
-// 示例: packages/ai/src/providers/amazon-bedrock.ts
 const bedrockAuth: ApiKeyAuth = {
     name: "AWS credentials",
-    // 注意: 无 login() 方法!
+    // 注意: 无 login() 方法! 用户无法通过 pi 交互式配置
     resolve: async ({ ctx, credential }) => {
+        // 按优先级检测环境中已有的 AWS 凭据:
         if (credential?.key) return { auth: { apiKey: credential.key }, source: "stored credential" };
-        if (await ctx.env("AWS_BEARER_TOKEN_BEDROCK")) return { auth: {}, source: "..." };
-        // ... 检查 AWS_PROFILE, AWS_ACCESS_KEY_ID, ECS 角色, Web Identity 等
+        if (await ctx.env("AWS_BEARER_TOKEN_BEDROCK")) return { auth: {}, source: "AWS_BEARER_TOKEN_BEDROCK" };
+        if (await ctx.env("AWS_PROFILE")) return { auth: {}, source: "AWS_PROFILE" };
+        if ((await ctx.env("AWS_ACCESS_KEY_ID")) && (await ctx.env("AWS_SECRET_ACCESS_KEY"))) {
+            return { auth: {}, source: "AWS access keys" };
+        }
+        if (await ctx.env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")) return { auth: {}, source: "ECS task role" };
+        if (await ctx.env("AWS_CONTAINER_CREDENTIALS_FULL_URI")) return { auth: {}, source: "ECS task role" };
+        if (await ctx.env("AWS_WEB_IDENTITY_TOKEN_FILE")) return { auth: {}, source: "web identity token" };
         return undefined;  // 未配置
     },
 };
 ```
 
-特点：
-- `ApiKeyAuth` 无 `login()` 方法（`login?` 可选）
-- `resolve()` 检测一系列环境变量/文件，不要求用户显式输入
-- `auth` 返回 `{ auth: {} }`  表示已配置但无需 API key 注入（SDK 自行签名）
-- 仍然通过 `apiKey` 渠道报告"已配置"状态
-- `Models.getAuth()` 返回 `undefined` 当所有环境变量均缺失
+**关键行为**：所有命中都返回 `{ auth: {} }`——空对象。因为 AWS SDK 的 credential chain 会在发出请求时自己完成 SigV4 签名，pi 不需要把 key 注入到 HTTP 请求中。但 `resolve()` 返回 `{ auth: {} }` 仍然表示"已配置"，和返回 `undefined`（未配置）有本质区别。
 
-**设计原理**：即使 Bedrock 不需要 API key 字符串，仍需一种方式告知 `Models` 该 provider 是否可用。`ApiKeyAuth.resolve()` 返回 `undefined` 即表示"未配置"。这是 `ProviderAuth` 要求至少提供 `apiKey` 或 `oauth` 之一的原因。
+**为什么叫 ambient**：凭据是"环境本身就有的"——env vars、`~/.aws/credentials` 文件、ECS metadata service、IAM 角色。pi 代码不收集、不存储、不传递它们。pi 只负责回答一个布尔问题："能不能用？"
+
+**与标准 `envApiKeyAuth` 的根本差异**：
+
+| | 标准 `envApiKeyAuth` | Ambient（Bedrock） |
+|---|---|---|
+| 凭据形式 | key 字符串 | 环境变量 / 文件 / IAM 角色 |
+| pi 是否持有 key | 是，读取后注入请求头 | 否，SDK 内部签名 |
+| `login()` | 有（交互式 prompt） | 无 |
+| `resolve()` 返回 | `{ auth: { apiKey: "sk-..." } }` | `{ auth: {} }` |
+| 用户操作 | 设置 env var 或 pi login | 配置 AWS 环境（`aws configure` 等） |
+
+虽然 Bedrock 不需要 API key 字符串，但仍在 `ProviderAuth` 中通过 `apiKey` 渠道报告状态。这正是 `ProviderAuth` 强制要求至少提供 `apiKey` 或 `oauth` 之一的原因：**即使"不需要 key"也是一种 auth 策略，需要有渠道报告"是否已配置"。**
 
 ### 5.4 自定义 ProviderEnv 认证提供者
 
@@ -361,10 +442,19 @@ auth: {
 |------|-------------------|-------------------------|-------------------|------------------------|------------------------|
 | `api` 字段 | `ProviderStreams` | `Partial<Record<TApi, ProviderStreams>>` | `ProviderStreams` | `ProviderStreams` | `ProviderStreams` |
 | `TApi` 泛型 | 单一类型 | 联合类型 | 单一类型 | 单一类型 | 单一类型 |
-| `auth` | `{ apiKey }` | `{ apiKey, oauth }` | `{ apiKey }`（无 login） | `{ apiKey }`（自定义 login） | `{ apiKey, oauth }` |
+| `auth` | `{ apiKey }` | `{ apiKey, oauth }` | `{ apiKey }`（无 `login`） | `{ apiKey }`（自定义 `login`） | `{ apiKey, oauth }` |
 | `baseUrl` | 静态 | 静态 | 无（SDK 内部） | 动态（占位符替换） | 静态 |
 | `login()` | envApiKeyAuth 标准 | envApiKeyAuth + OAuth | 无 | 多字段 prompt | OAuth 设备码流 |
-| `resolve()` 返回 | `{ apiKey }` | 按 credential 类型 | `{ auth: {} }` | `{ apiKey, baseUrl }` + `env` | OAuth `toAuth()` |
+| `resolve()` 返回 | `{ apiKey: "sk-..." }` | 按 credential 类型 | `{ auth: {} }` → SDK 自签名 | `{ apiKey, baseUrl }` + `env` | OAuth `toAuth()` |
+
+**额外维度：`stream` vs `streamSimple`**
+
+| | `stream` | `streamSimple` |
+|---|---|---|
+| 调用方知识 | 知道协议 | 只知道"我要推理" |
+| options 类型 | `ApiStreamOptions<TApi>`（协议特有） | `SimpleStreamOptions`（跨协议统一） |
+| 实现方式 | 直接调 SDK | 翻译参数后调 `stream` |
+| 典型参数 | `effort`, `thinkingBudgetTokens`, `reasoningEffort`... | `reasoning: "high"`
 
 ---
 
