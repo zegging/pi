@@ -52,10 +52,9 @@ The `AuthStorage` class (in `packages/coding-agent`) persists credentials, while
 
 ## Deep dives
 
-- [Provider 建模设计深度分析](ai-provider-model.md) — `createProvider` 入参/出参、`Provider<TApi>` 泛型设计、单一 API vs 多 API 路由表、Ambient/OAuth/自定义 Env 认证实现差异、`Models` 运行时编排、调用链全景
-- [Provider 与 Model 抽象分析](ai-provider-model-analysis.md) — `Model`（纯数据）vs `Provider`（运行时服务）的协作关系、compat 路径 vs Models 路径、5 层委托链、API 路由机制
-- [扩展系统：自定义 Provider](extensions-custom-provider.md) — 如何用 `models.json` 或 Extension `registerProvider()` 接入自定义 provider，含完整代码示例
-- [流事件协议分析](ai-stream-events.md) — `AssistantMessageEvent` 类型定义、事件生命周期、Provider 映射机制、HTTP 传输层关系
+- [Provider 与 Model 建模设计](provider-model.md) — `createProvider` 入参/出参、`Provider<TApi>` 泛型、多态实现、`Model` vs `Provider` 协作关系、compat vs Models 双路径、5 层委托链、调用链全景
+- [流事件协议](stream-events.md) — `AssistantMessageEvent` 类型定义、事件生命周期、EventStream 架构、Provider 映射机制
+- [自定义 Provider 接入](custom-providers.md) — 如何用 `models.json` 或 Extension `registerProvider()` 接入自定义 provider，含完整代码示例
 
 ## Notable recent changes
 
@@ -105,64 +104,4 @@ packages/ai/src/
     retry.ts, overflow.ts, abort-signals.ts
     diagnostics.ts      Assistant message diagnostics
     json-parse.ts       Partial JSON parsing
-    validation.ts       TypeBox-based validation
-    oauth/              OAuth provider interfaces
-
-  images.ts, images-models.ts, images-api-registry.ts
-                        Image generation support
-  image-models.generated.ts  Auto-generated image model catalog
-  models.generated.ts   Auto-generated text model catalog
-
-  compat.ts             Legacy compatibility layer
-  env-api-keys.ts       Environment variable API key resolution
-  cli.ts                CLI binary (pi-ai command)
 ```
-
-## Key entry points
-
-- **`@earendil-works/pi-ai`** → `src/index.ts` — core types, `Models`, auth types, no generated catalogs
-- **`@earendil-works/pi-ai/compat`** → `src/compat.ts` — legacy compatibility layer
-- **`@earendil-works/pi-ai/bedrock-provider`** → `src/bedrock-provider.ts` — Bedrock-specific entry
-
-## Working with models
-
-The `Models` class is the central coordination point:
-
-```typescript
-import { createModels } from "@earendil-works/pi-ai";
-
-const models = createModels();
-// Add providers
-models.addProvider(anthropicProvider());
-// Look up models
-const model = models.getModel("claude-sonnet-5-20250929");
-// Stream a completion
-const stream = models.stream({ model, messages, tools });
-```
-
-`Models` handles:
-- Model lookup by ID (with fuzzy matching)
-- Auth resolution (lazy, only when streaming)
-- Provider selection and delegation
-- Stream lifecycle management
-
-## Adding a new provider
-
-1. Create `packages/ai/src/providers/<name>.models.ts` with the static model catalog
-2. Create `packages/ai/src/providers/<name>.ts` with the provider factory
-3. Register in `packages/ai/src/providers/all.ts`
-4. Update `packages/ai/scripts/generate-models.ts` if needed and regenerate
-
-## Recent changes
-
-- Bedrock prompt caching for Claude 5 enabled
-- DS4 context overflow error detection added
-- Copilot device-code token polling delay
-- Fireworks GLM 5.2 Fast alignment with GLM 5.2
-- Copilot Claude Sonnet 5 added
-
-## Related docs
-
-- [packages/coding-agent/docs/providers.md](../../packages/coding-agent/docs/providers.md) — end-user provider setup
-- [packages/coding-agent/docs/models.md](../../packages/coding-agent/docs/models.md) — custom model configuration
-- [packages/coding-agent/docs/custom-provider.md](../../packages/coding-agent/docs/custom-provider.md) — implementing custom providers

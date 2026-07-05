@@ -91,6 +91,53 @@ The full check pipeline runs:
 6. **`tsgo --noEmit`** — type-check the entire project (uses `@typescript/native-preview`)
 7. **`check:browser-smoke`** — verify no browser-incompatible APIs are used in the coding-agent package
 
+## LLM abstraction architecture
+
+The `packages/ai` layer uses a hybrid pattern that combines Strategy, Service Locator, and Bridge:
+
+### Provider-Strategy
+
+`Provider<TApi>` holds `ProviderStreams` (i.e., `stream` / `streamSimple`), and at runtime dispatches by `model.api` to the right API implementation. This is clean Strategy: the context is `Provider`, the strategy is the API implementation.
+
+### Model as routable value object
+
+`Model` carries both `provider` and `api` string tags. At runtime, callers use:
+
+- `model.provider` to look up the `Provider` instance in the `Models` collection
+- `model.api` to select the API implementation within that `Provider`
+
+This means `Model` is both a value object (describing an LLM model's capabilities) and a routing key (used to find the handler). This is a pragmatic trade-off: it enables model-name-based lookup, multi-provider coexistence, and model comparison/deduplication, at the cost of giving `Model` a dual identity.
+
+Deeper analysis: [Provider 建模设计深度分析](packages/ai-provider-model.md), [Provider 与 Model 抽象分析](packages/ai-provider-model-analysis.md).
+
+### Two code paths (migration in progress)
+
+The system currently has two paths for streaming LLM requests:
+
+1. **compat path** (legacy) — `streamSimple` from `@earendil-works/pi-ai/compat`, using a global `apiProviderRegistry`. The `coding-agent` SDK uses this path (`sdk.ts:301-331`).
+
+2. **Models path** (target) — `createModels()` + `createProvider()`, where providers are registered in a `Models` collection. `AgentHarness` and new code use this path.
+
+Both paths do the same thing (auth resolution → provider lookup → API dispatch → stream), but the compat path uses a global registry while the Models path uses a local collection. The `compat.ts` module is explicitly marked for deletion once the `coding-agent` `ModelManager` migration completes (`packages/ai/src/compat.ts:1-10`).
+
+### Stream delegation chain
+
+A typical streaming request goes through:
+
+```
+Agent → streamFn (auth injection, `sdk.ts:301`)
+  → Models.streamSimple (provider lookup, `models.ts:278`)
+    → Provider.streamSimple (API dispatch, `models.ts:366`)
+      → ProviderStreams.streamSimple (option translation)
+        → stream() (HTTP call)
+```
+
+Each layer has a distinct responsibility (auth, provider lookup, API routing, option translation, HTTP), but the chain is deeper than ideal. The `applyAuth` in `ModelsImpl` is the canonical auth layer; `streamFn` in `sdk.ts` also injects auth, creating a logical redundancy (though the second `applyAuth` won't overwrite already-set values).
+
+### Stream event protocol
+
+All provider implementations normalize to a single `AssistantMessageEvent` protocol (`packages/ai/src/types.ts:453-465`). Each content block type (text, thinking, toolCall) follows a `_start → _delta* → _end` lifecycle. The `EventStream` class (`packages/ai/src/utils/event-stream.ts`) provides the async-iterable infrastructure. See [流事件协议分析](packages/ai-stream-events.md).
+
 ## Supply-chain hardening
 
 - Direct external dependencies are **pinned to exact versions** in `package.json`

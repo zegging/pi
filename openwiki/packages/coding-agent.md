@@ -176,6 +176,9 @@ The coding-agent package has extensive end-user documentation in `packages/codin
 
 ## Recent changes
 
+- **Vercel AI Gateway attribution removed** — attribution headers for `vercel-ai-gateway` have been removed (`provider-attribution.ts`).
+- **Edit tool schema relaxed** — `additionalProperties` constraint removed from edit/replaceEdit input schemas, allowing extra fields in edit tool calls (`tools/edit.ts`).
+- **pnpm self-update prune hint** — when `pnpm` reports missing package versions during self-update, users are now prompted to run `pnpm store prune` to clear stale metadata (`package-manager-cli.ts`).
 - Skip unauthenticated default model (prevents errors when no auth configured)
 - Abort stuck context hooks
 - Set `executionMode: sequential` on question example tool
